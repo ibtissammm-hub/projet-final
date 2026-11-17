@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""opsh : mini-shell en Python (Projet 2, Systèmes d'Exploitation).
+
+Fonctionnalités :
+- boucle de lecture (REPL) avec invite "opsh> "
+- découpage de la ligne par "->" (chaque étape envoie sa sortie à la suivante)
+- création de processus avec fork, exécution avec exec, attente avec waitpid
+- commandes internes : cd et exit
+"""
+import os
+import shlex
+import sys
+
+
+def lire_commande():
+    """Affiche l'invite et lit une ligne. Ctrl+D quitte le shell."""
+    try:
+        return input("opsh> ")
+    except EOFError:
+        print()
+        return "exit"
+
+
+def decouper_pipeline(ligne):
+    """Découpe la ligne par '->' et sépare chaque étape en arguments."""
+    etapes = [etape.strip() for etape in ligne.split("->")]
+    return [shlex.split(etape) for etape in etapes if etape]
+
+
+def executer_interne(args):
+    """Exécute cd ou exit. Renvoie True si la commande était interne."""
+    if args[0] == "exit":
+        sys.exit(0)
+    if args[0] == "cd":
+        dossier = args[1] if len(args) > 1 else os.path.expanduser("~")
+        try:
+            os.chdir(dossier)
+        except OSError as erreur:
+            print(f"cd: {erreur}")
+        return True
+    return False
+
+
+def executer_pipeline(commandes):
+    """Lance chaque commande dans un processus fils relié par un tube."""
+    pids = []
+    entree = 0  # l'entrée de la première commande est le clavier
+    for i, args in enumerate(commandes):
+        derniere = (i == len(commandes) - 1)
+        if not derniere:
+            lecture, ecriture = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            # Processus fils : branche l'entrée et la sortie, puis exec
+            if entree != 0:
+                os.dup2(entree, 0)
+                os.close(entree)
+            if not derniere:
+                os.close(lecture)
+                os.dup2(ecriture, 1)
+                os.close(ecriture)
+            try:
+                os.execvp(args[0], args)
+            except FileNotFoundError:
+                print(f"opsh: commande introuvable: {args[0]}", file=sys.stderr)
+                os._exit(127)
+        # Processus père : ferme les extrémités de tube devenues inutiles
+        pids.append(pid)
+        if entree != 0:
+            os.close(entree)
+        if not derniere:
+            os.close(ecriture)
+            entree = lecture
+    for pid in pids:
+        os.waitpid(pid, 0)
+
+
+def main():
+    """Boucle principale du shell."""
+    while True:
+        ligne = lire_commande().strip()
+        if not ligne:
+            continue
+        try:
+            commandes = decouper_pipeline(ligne)
+        except ValueError as erreur:
+            print(f"opsh: erreur de syntaxe: {erreur}")
+            continue
+        if not commandes:
+            continue
+        if len(commandes) == 1 and executer_interne(commandes[0]):
+            continue
+        executer_pipeline(commandes)
+
+
+if __name__ == "__main__":
+    main()
